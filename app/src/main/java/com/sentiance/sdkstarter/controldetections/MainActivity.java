@@ -7,54 +7,43 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
-import android.os.Handler;
+import android.support.annotation.Nullable;
 import android.support.v4.content.ContextCompat;
 import android.support.v4.content.LocalBroadcastManager;
 import android.support.v7.app.AppCompatActivity;
+import android.text.format.Formatter;
 import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.ListView;
 
-import com.sentiance.sdk.Sdk;
-import com.sentiance.sdk.SdkIssue;
-import com.sentiance.sdk.StatusMessage;
-import com.sentiance.sdk.util.Optional;
+import com.sentiance.sdk.OnStartFinishedHandler;
+import com.sentiance.sdk.SdkStatus;
+import com.sentiance.sdk.Sentiance;
+import com.sentiance.sdk.trip.StartTripCallback;
+import com.sentiance.sdk.trip.StopTripCallback;
+import com.sentiance.sdk.trip.TripType;
 
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 
-public class MainActivity extends AppCompatActivity {
-
-    private static final long STATUS_REFRESH_INTERVAL_MILLIS = 5000;
-
-    private final Handler handler = new Handler();
-    private final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US);
-
-    private final BroadcastReceiver authenticationBroadcastReciever = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            refreshStatus();
-        }
-    };
-
-    private final Runnable refreshStatusRunnable = new Runnable() {
-        @Override
-        public void run() {
-            refreshStatus();
-            handler.postDelayed(refreshStatusRunnable, STATUS_REFRESH_INTERVAL_MILLIS);
-        }
-    };
-
+public class MainActivity extends AppCompatActivity implements OnStartFinishedHandler {
     private Button controlDetectionsButton;
     private Button controlTripButton;
     private ListView statusList;
 
+    private final TripStartStopCallback mTripStartStopCallback = new TripStartStopCallback();
+    private final BroadcastReceiver statusUpdateReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive (Context context, Intent intent) {
+            refreshStatus();
+            updateButtonTexts();
+        }
+    };
+
     @Override
-    protected void onCreate(Bundle savedInstanceState) {
+    protected void onCreate (Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
@@ -64,100 +53,157 @@ public class MainActivity extends AppCompatActivity {
 
         setContentView(R.layout.activity_main);
 
-        controlDetectionsButton = (Button) findViewById(R.id.controlDetectionsButton);
-        controlTripButton = (Button) findViewById(R.id.controlTripButton);
-        statusList = (ListView) findViewById(R.id.statusList);
-    }
-
-    private void refreshStatus() {
-        List<String> statusItems = new ArrayList<>();
-        statusItems.add("SDK flavor: " + Sdk.getInstance(getApplicationContext()).getFlavor());
-        statusItems.add("SDK version: " + Sdk.getInstance(getApplicationContext()).getVersion());
-
-        // On Android, the user id is a resource url, using format https://api.sentiance.com/users/USER_ID, you can replace the part to obtain the short URL code:
-        Optional<String> userId = Sdk.getInstance(getApplicationContext()).user().getId();
-        if (userId.isPresent()) {
-            statusItems.add("User ID: " + userId.get().replace("https://api.sentiance.com/users/", ""));
-        } else {
-            statusItems.add("User ID: N/A");
-        }
-
-        // You can use the status message to obtain more information
-        StatusMessage statusMessage = Sdk.getInstance(getApplicationContext()).getStatusMessage();
-        statusItems.add("Mode: " + statusMessage.mode.name());
-
-        for (SdkIssue issue : statusMessage.issues) {
-            statusItems.add("Issue: " + issue.type.name());
-        }
-
-        statusItems.add("Wi-Fi data: " + statusMessage.wifiQuotaUsed + " / " + statusMessage.wifiQuotaLimit);
-        statusItems.add("Mobile data: " + statusMessage.mobileQuotaUsed + " / " + statusMessage.mobileQuotaLimit);
-        statusItems.add("Disk: " + statusMessage.diskQuotaUsed + " / " + statusMessage.diskQuotaLimit);
-        statusItems.add("Wi-Fi last seen: " + dateFormat.format(new Date(statusMessage.wifiLastSeenTimestamp)));
-
-        statusList.setAdapter(new ArrayAdapter<>(this, R.layout.list_item_status, R.id.textView, statusItems));
-
-        // Update the controlDetectionsButton
-        if (Sdk.getInstance(getApplicationContext()).getFlavor().equals("triggered_trips")) {
-            controlDetectionsButton.setText("Start Detections (disabled)");
-            controlDetectionsButton.setEnabled(false);
-        } else {
-            controlDetectionsButton.setText(statusMessage.isDetecting ? "Stop Detections" : "Start Detections");
-            controlDetectionsButton.setEnabled(true);
-        }
-
-        // Update the controlTripButton
-        if (!Sdk.getInstance(getApplicationContext()).getFlavor().equals("triggered_trips")) {
-            controlTripButton.setText("Start Trip (disabled)");
-            controlTripButton.setEnabled(false);
-        } else {
-            controlTripButton.setText(Sdk.getInstance(getApplicationContext()).trip().isTripOngoing() ? "Stop Trip" : "Start Trip");
-            controlTripButton.setEnabled(true);
-        }
+        controlDetectionsButton = findViewById(R.id.controlDetectionsButton);
+        controlTripButton = findViewById(R.id.controlTripButton);
+        statusList = findViewById(R.id.statusList);
     }
 
     @Override
-    protected void onResume() {
+    protected void onResume () {
         super.onResume();
 
         // Our MyApplication broadcasts when the SDK authentication was successful
-        LocalBroadcastManager.getInstance(getApplicationContext()).registerReceiver(authenticationBroadcastReciever, new IntentFilter(MyApplication.ACTION_SDK_AUTHENTICATION_SUCCESS));
-
-        // Periodically refresh the status UI
-        handler.post(refreshStatusRunnable);
+        LocalBroadcastManager.getInstance(this).registerReceiver(statusUpdateReceiver, new IntentFilter(MyApplication.ACTION_SENTIANCE_STATUS_UPDATE));
 
         refreshStatus();
+
+        if (!Sentiance.getInstance(getApplicationContext()).isInitialized()) {
+            controlDetectionsButton.setEnabled(false);
+            controlTripButton.setEnabled(false);
+        }
+        updateButtonTexts();
     }
 
     @Override
-    protected void onPause() {
+    protected void onPause () {
         super.onPause();
 
-        LocalBroadcastManager.getInstance(getApplicationContext()).unregisterReceiver(authenticationBroadcastReciever);
-        handler.removeCallbacks(refreshStatusRunnable);
+        LocalBroadcastManager.getInstance(getApplicationContext()).unregisterReceiver(statusUpdateReceiver);
     }
 
-    public void onControlDetectionsButtonClicked(View view) {
-        if (Sdk.getInstance(getApplicationContext()).getStatusMessage().isDetecting) {
-            Sdk.getInstance(getApplicationContext()).stopDetections();
-            controlDetectionsButton.setText("Stopping Detections ...");
-            controlDetectionsButton.setEnabled(false);
-        } else {
-            Sdk.getInstance(getApplicationContext()).startDetections();
-            controlDetectionsButton.setText("Starting Detections ...");
-            controlDetectionsButton.setEnabled(false);
+    private void refreshStatus () {
+        List<String> statusItems = new ArrayList<>();
+
+        if (Sentiance.getInstance(this).isInitialized()) {
+            controlDetectionsButton.setEnabled(true);
+            controlTripButton.setEnabled(true);
+
+            statusItems.add("SDK version: " + Sentiance.getInstance(this).getVersion());
+            statusItems.add("User ID: " + Sentiance.getInstance(this).getUserId());
+
+            SdkStatus sdkStatus = Sentiance.getInstance(this).getSdkStatus();
+
+            statusItems.add("Start status: " + sdkStatus.startStatus.name());
+            statusItems.add("Can detect: " + String.valueOf(sdkStatus.canDetect));
+            statusItems.add("Remote enabled: " + String.valueOf(sdkStatus.isRemoteEnabled));
+            statusItems.add("Location perm granted: " + String.valueOf(sdkStatus.isLocationPermGranted));
+            statusItems.add("Location setting: " + sdkStatus.locationSetting.name());
+
+            statusItems.add(formatQuota("Wi-Fi", sdkStatus.wifiQuotaStatus, Sentiance.getInstance(this).getWiFiQuotaUsage(), Sentiance.getInstance(this).getWiFiQuotaLimit()));
+            statusItems.add(formatQuota("Mobile data", sdkStatus.mobileQuotaStatus, Sentiance.getInstance(this).getMobileQuotaUsage(), Sentiance.getInstance(this).getMobileQuotaLimit()));
+            statusItems.add(formatQuota("Disk", sdkStatus.diskQuotaStatus, Sentiance.getInstance(this).getDiskQuotaUsage(), Sentiance.getInstance(this).getDiskQuotaLimit()));
+        }
+        else {
+            statusItems.add("SDK not initialized");
+        }
+
+        statusList.setAdapter(new ArrayAdapter<>(this, R.layout.list_item_status, R.id.textView, statusItems));
+    }
+
+    private String formatQuota (String name, SdkStatus.QuotaStatus status, long bytesUsed, long bytesLimit) {
+        return String.format(Locale.US, "%s quota: %s / %s (%s)",
+                name,
+                Formatter.formatShortFileSize(this, bytesUsed),
+                Formatter.formatShortFileSize(this, bytesLimit),
+                status.name());
+    }
+
+    public void onControlDetectionsButtonClicked (View view) {
+        Sentiance sentiance = Sentiance.getInstance(getApplicationContext());
+        if (!sentiance.isInitialized()) {
+            return;
+        }
+
+        if (sentiance.getSdkStatus().startStatus == SdkStatus.StartStatus.STARTED) {
+            sentiance.stop();
+        }
+        else if (sentiance.getSdkStatus().startStatus == SdkStatus.StartStatus.NOT_STARTED) {
+            sentiance.start(this);
+        }
+
+        updateButtonTexts();
+    }
+
+    public void onControlTripButtonClicked (View view) {
+        Sentiance sentiance = Sentiance.getInstance(getApplicationContext());
+        if (!sentiance.isInitialized() || !isSdkStarted()) {
+            return;
+        }
+
+        if (sentiance.isTripOngoing(TripType.EXTERNAL_TRIP)) {
+            stopTrip();
+        }
+        else {
+            startTrip();
+        }
+
+        controlTripButton.setEnabled(false);
+        updateButtonTexts();
+    }
+
+    private void startTrip () {
+        Sentiance.getInstance(getApplicationContext()).startTrip(null, null, mTripStartStopCallback);
+    }
+
+    private void stopTrip () {
+        Sentiance.getInstance(getApplicationContext()).startTrip(null, null, mTripStartStopCallback);
+    }
+
+    private boolean isSdkStarted () {
+        return Sentiance.getInstance(this).getSdkStatus().startStatus == SdkStatus.StartStatus.STARTED;
+    }
+
+    @Override
+    public void onStartFinished (SdkStatus sdkStatus) {
+        controlDetectionsButton.setEnabled(true);
+        updateButtonTexts();
+    }
+
+    private void updateButtonTexts () {
+        Sentiance sentiance = Sentiance.getInstance(getApplicationContext());
+        SdkStatus sdkStatus = sentiance.getSdkStatus();
+
+        if (sdkStatus.startStatus == SdkStatus.StartStatus.STARTED ||
+                sdkStatus.startStatus == SdkStatus.StartStatus.PENDING) {
+            controlDetectionsButton.setText(R.string.stop_detections);
+        }
+        else {
+            controlDetectionsButton.setText(R.string.start_detections);
+        }
+
+        if (sentiance.isTripOngoing(TripType.EXTERNAL_TRIP)) {
+            controlTripButton.setText(R.string.stop_trip);
+        }
+        else {
+            controlTripButton.setText(R.string.start_trip);
         }
     }
 
-    public void onControlTripButtonClicked(View view) {
-        if (Sdk.getInstance(getApplicationContext()).trip().isTripOngoing()) {
-            Sdk.getInstance(getApplicationContext()).trip().stopTrip();
-            controlTripButton.setText("Stopping Trip ...");
-            controlTripButton.setEnabled(false);
-        } else {
-            Sdk.getInstance(getApplicationContext()).trip().startTrip(null, null);
-            controlTripButton.setText("Starting Trip ...");
-            controlTripButton.setEnabled(false);
+    private class TripStartStopCallback implements StopTripCallback, StartTripCallback {
+
+        @Override
+        public void onSuccess () {
+            handleTripStartStop();
+        }
+
+        @Override
+        public void onFailure (@Nullable SdkStatus sdkStatus) {
+            handleTripStartStop();
+        }
+
+        private void handleTripStartStop () {
+            updateButtonTexts();
+            controlTripButton.setEnabled(true);
         }
     }
 }
