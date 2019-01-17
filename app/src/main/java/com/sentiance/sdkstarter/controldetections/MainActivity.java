@@ -17,6 +17,7 @@ import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.ListView;
 
+import com.sentiance.sdk.InitState;
 import com.sentiance.sdk.OnStartFinishedHandler;
 import com.sentiance.sdk.SdkStatus;
 import com.sentiance.sdk.Sentiance;
@@ -67,7 +68,7 @@ public class MainActivity extends AppCompatActivity implements OnStartFinishedHa
 
         refreshStatus();
 
-        if (!Sentiance.getInstance(getApplicationContext()).isInitialized()) {
+        if (Sentiance.getInstance(this).getInitState() != InitState.INITIALIZED) {
             controlDetectionsButton.setEnabled(false);
             controlTripButton.setEnabled(false);
         }
@@ -84,7 +85,7 @@ public class MainActivity extends AppCompatActivity implements OnStartFinishedHa
     private void refreshStatus () {
         List<String> statusItems = new ArrayList<>();
 
-        if (Sentiance.getInstance(this).isInitialized()) {
+        if (Sentiance.getInstance(this).getInitState() == InitState.INITIALIZED) {
             controlDetectionsButton.setEnabled(true);
             controlTripButton.setEnabled(true);
 
@@ -120,7 +121,7 @@ public class MainActivity extends AppCompatActivity implements OnStartFinishedHa
 
     public void onControlDetectionsButtonClicked (View view) {
         Sentiance sentiance = Sentiance.getInstance(getApplicationContext());
-        if (!sentiance.isInitialized()) {
+        if (sentiance.getInitState() != InitState.INITIALIZED) {
             return;
         }
 
@@ -136,7 +137,7 @@ public class MainActivity extends AppCompatActivity implements OnStartFinishedHa
 
     public void onControlTripButtonClicked (View view) {
         Sentiance sentiance = Sentiance.getInstance(getApplicationContext());
-        if (!sentiance.isInitialized() || !isSdkStarted()) {
+        if (sentiance.getInitState() != InitState.INITIALIZED || !isSdkStarted()) {
             return;
         }
 
